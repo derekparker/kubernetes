@@ -77,7 +77,7 @@ type KubeletBootstrap interface {
 	ListenAndServe(address net.IP, port uint, tlsOptions *server.TLSOptions, auth server.AuthInterface, enableDebuggingHandlers bool)
 	ListenAndServeReadOnly(address net.IP, port uint)
 	Run(<-chan kubetypes.PodUpdate)
-	RunOnce(<-chan kubetypes.PodUpdate) ([]kubelet.RunPodResult, error)
+	RunOnce(<-chan kubetypes.PodUpdate, time.Duration) ([]kubelet.RunPodResult, error)
 }
 
 // create and initialize a Kubelet instance
@@ -185,6 +185,7 @@ func UnsecuredKubeletConfig(s *options.KubeletServer) (*KubeletConfig, error) {
 		AllowPrivileged:           s.AllowPrivileged,
 		Auth:                      nil, // default does not enforce auth[nz]
 		CAdvisorInterface:         nil, // launches background processes, not set here
+		BootstrapPodLabel:         s.BootstrapPodLabel,
 		VolumeStatsAggPeriod:      s.VolumeStatsAggPeriod.Duration,
 		CgroupRoot:                s.CgroupRoot,
 		Cloud:                     nil, // cloud provider might start background processes
@@ -244,6 +245,7 @@ func UnsecuredKubeletConfig(s *options.KubeletServer) (*KubeletConfig, error) {
 		RktStage1Image:                 s.RktStage1Image,
 		RootDirectory:                  s.RootDirectory,
 		Runonce:                        s.RunOnce,
+		RunonceTimeout:                 s.RunOnceTimeout,
 		SerializeImagePulls:            s.SerializeImagePulls,
 		StandaloneMode:                 (len(s.APIServerList) == 0),
 		StreamingConnectionIdleTimeout: s.StreamingConnectionIdleTimeout.Duration,
@@ -636,7 +638,7 @@ func RunKubelet(kcfg *KubeletConfig) error {
 
 	// process pods and exit.
 	if kcfg.Runonce {
-		if _, err := k.RunOnce(podCfg.Updates()); err != nil {
+		if _, err := k.RunOnce(podCfg.Updates(), kcfg.RunonceTimeout); err != nil {
 			return fmt.Errorf("runonce failed: %v", err)
 		}
 		glog.Info("Started kubelet as runonce")
@@ -693,6 +695,7 @@ type KubeletConfig struct {
 	AllowPrivileged                bool
 	Auth                           server.AuthInterface
 	Builder                        KubeletBuilder
+	BootstrapPodLabel              map[string]string
 	CAdvisorInterface              cadvisor.Interface
 	VolumeStatsAggPeriod           time.Duration
 	CgroupRoot                     string
@@ -758,6 +761,7 @@ type KubeletConfig struct {
 	RktStage1Image                 string
 	RootDirectory                  string
 	Runonce                        bool
+	RunonceTimeout                 time.Duration
 	SerializeImagePulls            bool
 	StandaloneMode                 bool
 	StreamingConnectionIdleTimeout time.Duration
@@ -832,6 +836,7 @@ func CreateAndInitKubelet(kc *KubeletConfig) (k KubeletBootstrap, pc *config.Pod
 		kc.DiskSpacePolicy,
 		kc.Cloud,
 		kc.NodeLabels,
+		kc.BootstrapPodLabel,
 		kc.NodeStatusUpdateFrequency,
 		kc.OSInterface,
 		kc.CgroupRoot,

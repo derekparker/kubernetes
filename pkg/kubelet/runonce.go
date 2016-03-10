@@ -26,6 +26,8 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
+	"k8s.io/kubernetes/pkg/labels"
+	"k8s.io/kubernetes/pkg/util/wait"
 )
 
 const (
@@ -41,7 +43,20 @@ type RunPodResult struct {
 }
 
 // RunOnce polls from one configuration update and run the associated pods.
-func (kl *Kubelet) RunOnce(updates <-chan kubetypes.PodUpdate) ([]RunPodResult, error) {
+func (kl *Kubelet) RunOnce(updates <-chan kubetypes.PodUpdate, runOnceTimeout time.Duration) ([]RunPodResult, error) {
+	if kl.kubeClient != nil {
+		done := make(chan struct{})
+		defer close(done)
+		// Sync node status to master (needed to register node with master
+		// to get pods).
+		go wait.Until(kl.syncNodeStatus, kl.nodeStatusUpdateFrequency, done)
+		go wait.Until(kl.updateRuntimeUp, 5*time.Second, done)
+		go wait.Until(kl.podKiller, 1*time.Second, wait.NeverStop)
+		kl.statusManager.Start()
+		kl.probeManager.Start()
+		kl.pleg.Start()
+	}
+
 	// Setup filesystem directories.
 	if err := kl.setupDataDirs(); err != nil {
 		return nil, err
@@ -54,14 +69,34 @@ func (kl *Kubelet) RunOnce(updates <-chan kubetypes.PodUpdate) ([]RunPodResult, 
 		}
 	}
 
-	select {
-	case u := <-updates:
-		glog.Infof("processing manifest with %d pods", len(u.Pods))
-		result, err := kl.runOnce(u.Pods, runOnceRetryDelay)
-		glog.Infof("finished processing %d pods", len(u.Pods))
-		return result, err
-	case <-time.After(runOnceManifestDelay):
-		return nil, fmt.Errorf("no pod manifest update after %v", runOnceManifestDelay)
+	var bootstrap, match bool
+	sel := labels.Everything()
+	if len(kl.bootstrapPodLabel) != 0 {
+		sel = labels.Set(kl.bootstrapPodLabel).AsSelector()
+		bootstrap = true
+	}
+	for {
+		glog.Info("begin wait for update")
+		select {
+		case u := <-updates:
+			for _, p := range u.Pods {
+				if match = sel.Matches(labels.Set(p.Labels)); match {
+					break
+				}
+			}
+			if bootstrap && !match {
+				glog.Info("ignoring manifest, does not contain pod matching bootstrap pod label")
+				continue
+			}
+			glog.Infof("processing manifest with %d pods", len(u.Pods))
+			result, err := kl.runOnce(u.Pods, runOnceRetryDelay)
+			glog.Infof("finished processing %d pods", len(u.Pods))
+			return result, err
+		case <-time.After(runOnceTimeout):
+			if !bootstrap { // Ignore timeouts when waiting for a bootstrap pod.
+				return nil, fmt.Errorf("no pod manifest update after %v", runOnceTimeout)
+			}
+		}
 	}
 }
 
