@@ -29,6 +29,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/exp/inotify"
+
 	"github.com/golang/glog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -273,11 +275,38 @@ func Run(s *options.KubeletServer, kcfg *KubeletConfig) error {
 }
 
 func run(s *options.KubeletServer, kcfg *KubeletConfig) (err error) {
+	done := make(chan struct{})
 	if s.LockFilePath != "" {
 		glog.Infof("aquiring lock on %q", s.LockFilePath)
 		if err := flock.Acquire(s.LockFilePath); err != nil {
 			return fmt.Errorf("unable to aquire file lock on %q: %v", s.LockFilePath, err)
 		}
+		if s.Bootstrap {
+			go func() {
+				glog.Infof("watching for inotify events for: %v", s.LockFilePath)
+				watcher, err := inotify.NewWatcher()
+				if err != nil {
+					glog.Fatal(err)
+				}
+				err = watcher.Watch(s.LockFilePath)
+				if err != nil {
+					glog.Fatal(err)
+				}
+				for {
+					select {
+					case ev := <-watcher.Event:
+						glog.Infof("event: %v", ev)
+						if ev.Mask&inotify.IN_OPEN == inotify.IN_OPEN {
+							close(done)
+							return
+						}
+					case err := <-watcher.Error:
+						glog.Infof("error: %v", err)
+					}
+				}
+			}()
+		}
+
 	}
 	if c, err := configz.New("componentconfig"); err == nil {
 		c.Set(s.KubeletConfiguration)
@@ -367,8 +396,10 @@ func run(s *options.KubeletServer, kcfg *KubeletConfig) (err error) {
 		return nil
 	}
 
-	// run forever
-	select {}
+	select {
+	case <-done:
+	}
+	return nil
 }
 
 // InitializeTLS checks for a configured TLSCertFile and TLSPrivateKeyFile: if unspecified a new self-signed
