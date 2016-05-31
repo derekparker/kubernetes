@@ -940,11 +940,7 @@ func (kl *Kubelet) GetNode() (*api.Node, error) {
 	if kl.standaloneMode {
 		return kl.initialNodeStatus()
 	}
-	n, err := kl.nodeInfo.GetNodeInfo(kl.nodeName)
-	if err != nil {
-		return kl.initialNodeStatus()
-	}
-	return n, nil
+	return kl.nodeInfo.GetNodeInfo(kl.nodeName)
 }
 
 // Starts garbage collection threads.
@@ -1133,6 +1129,10 @@ func (kl *Kubelet) registerWithApiserver() {
 		node, err := kl.initialNodeStatus()
 		if err != nil {
 			glog.Errorf("Unable to construct api.Node object for kubelet: %v", err)
+			continue
+		}
+		if err := kl.nodeInfo.AddNodeInfo(node); err != nil {
+			glog.Errorf("Unable to add node to cache: %v", err)
 			continue
 		}
 		glog.V(2).Infof("Attempting to register node %s", node.Name)

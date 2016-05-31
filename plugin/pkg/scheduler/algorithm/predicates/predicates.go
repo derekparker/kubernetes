@@ -32,6 +32,7 @@ import (
 
 type NodeInfo interface {
 	GetNodeInfo(nodeID string) (*api.Node, error)
+	AddNodeInfo(*api.Node) error
 }
 
 type PersistentVolumeInfo interface {
@@ -55,12 +56,24 @@ func (nodes StaticNodeInfo) GetNodeInfo(nodeID string) (*api.Node, error) {
 	return nil, fmt.Errorf("failed to find node: %s, %#v", nodeID, nodes)
 }
 
+func (nodes StaticNodeInfo) AddNodeInfo(node *api.Node) error {
+	if node != nil {
+		nodes.Items = append(nodes.Items, *node)
+	}
+	return nil
+}
+
 type ClientNodeInfo struct {
 	*client.Client
 }
 
 func (nodes ClientNodeInfo) GetNodeInfo(nodeID string) (*api.Node, error) {
 	return nodes.Nodes().Get(nodeID)
+}
+
+func (nodes ClientNodeInfo) AddNodeInfo(node *api.Node) error {
+	_, err := nodes.Nodes().Create(node)
+	return err
 }
 
 type CachedNodeInfo struct {
@@ -80,6 +93,10 @@ func (c *CachedNodeInfo) GetNodeInfo(id string) (*api.Node, error) {
 	}
 
 	return node.(*api.Node), nil
+}
+
+func (c *CachedNodeInfo) AddNodeInfo(node *api.Node) error {
+	return c.Add(node)
 }
 
 func isVolumeConflict(volume api.Volume, pod *api.Pod) bool {
