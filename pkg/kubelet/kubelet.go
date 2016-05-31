@@ -1127,6 +1127,10 @@ func (kl *Kubelet) registerWithApiserver() {
 			glog.Errorf("Unable to construct api.Node object for kubelet: %v", err)
 			continue
 		}
+		if err := kl.nodeInfo.AddNodeInfo(node); err != nil {
+			glog.Errorf("Unable to add node to cache: %v", err)
+			continue
+		}
 		glog.V(2).Infof("Attempting to register node %s", node.Name)
 		if _, err := kl.kubeClient.Core().Nodes().Create(node); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
